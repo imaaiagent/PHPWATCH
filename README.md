@@ -59,3 +59,10 @@ Paste the output into Safe Scanner. Do not paste cookies, authorization headers,
 - Add a small server-side feed aggregator with strict source allowlisting and caching.
 - Add tests for header parsing and report generation.
 - Add an opt-in public report page only after adding privacy controls and expiry.
+
+
+## Threat intelligence dashboard updates
+
+- Adds an overview based on the currently loaded NVD result set: severity distribution, loaded record count, critical/high count, product-configuration coverage, and this-month publication count.
+- Adds a 30/60/119-day date window, which reloads records from NVD, plus vendor/product text matching in the threat search and product filter.
+- Shows vulnerable CPE matches supplied by NVD in each in-app CVE detail panel. NVD CPE matches are not a substitute for checking vendor advisories and fixed versions.

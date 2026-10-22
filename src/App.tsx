@@ -11,6 +11,7 @@ type Finding = { name: string; status: 'Present' | 'Not detected' | 'Review'; de
 
 type ThreatSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN'
 type ThreatReference = { url: string; source?: string; tags?: string[] }
+type AffectedProduct = { vendor?: string; product?: string; versions?: { version?: string; versionType?: string; status?: string; lessThan?: string; lessThanOrEqual?: string; changes?: { at?: string; status?: string }[] }[] }
 type ThreatItem = {
   id: string
   description: string
@@ -21,6 +22,7 @@ type ThreatItem = {
   sourceUrl: string
   weaknesses: string[]
   references: ThreatReference[]
+  affectedProducts: AffectedProduct[]
 }
 type NvdCve = {
   id?: string
@@ -30,6 +32,7 @@ type NvdCve = {
   metrics?: Record<string, { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } }[]>
   weaknesses?: { description?: { lang: string; value: string }[] }[]
   references?: ThreatReference[]
+  configurations?: { nodes?: { cpeMatch?: { vulnerable?: boolean; criteria?: string; versionStartIncluding?: string; versionStartExcluding?: string; versionEndIncluding?: string; versionEndExcluding?: string }[]; children?: unknown[] }[]
 }
 
 function getCveSeverity(cve: NvdCve): { severity: ThreatSeverity; score: number | null } {
@@ -62,6 +65,11 @@ function mapNvdItem(item: NvdCve): ThreatItem {
     sourceUrl: `https://nvd.nist.gov/vuln/detail/${encodeURIComponent(cve.id || '')}`,
     weaknesses: (cve.weaknesses || []).flatMap(group => (group.description || []).filter(d => d.lang === 'en').map(d => d.value)).filter((value, index, all) => all.indexOf(value) === index),
     references: cve.references || [],
+    affectedProducts: (cve.configurations || []).flatMap(configuration => (configuration.nodes || []).flatMap(node => (node.cpeMatch || []).filter(match => match.vulnerable).map(match => {
+      const parts = (match.criteria || '').split(':')
+      const versionRange = [match.versionStartIncluding ? `>= ${match.versionStartIncluding}` : '', match.versionStartExcluding ? `> ${match.versionStartExcluding}` : '', match.versionEndIncluding ? `<= ${match.versionEndIncluding}` : '', match.versionEndExcluding ? `< ${match.versionEndExcluding}` : ''].filter(Boolean).join(' · ')
+      return { vendor: parts[3] || 'Unknown vendor', product: parts[4] || 'Unknown product', versions: [{ version: parts[5] && parts[5] !== '*' ? parts[5] : '', status: 'vulnerable', ...(versionRange ? { lessThan: versionRange } : {}) }] }
+    }))).filter((product, index, all) => all.findIndex(other => other.vendor === product.vendor && other.product === product.product && JSON.stringify(other.versions) === JSON.stringify(product.versions)) === index),
   }
 }
 
@@ -108,6 +116,8 @@ function App() {
   const [lastUpdated, setLastUpdated] = useState('')
   const [threatSearch, setThreatSearch] = useState('')
   const [severityFilter, setSeverityFilter] = useState('ALL')
+  const [dateFilter, setDateFilter] = useState('119')
+  const [productFilter, setProductFilter] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [selectedThreat, setSelectedThreat] = useState<ThreatItem | null>(null)
   async function loadThreatFeed(manual = false) {
@@ -116,7 +126,7 @@ function App() {
     setFeedError('')
     try {
       const end = new Date()
-      const start = new Date(end.getTime() - 119 * 24 * 60 * 60 * 1000)
+      const start = new Date(end.getTime() - Number(dateFilter) * 24 * 60 * 60 * 1000)
       const iso = (date: Date) => date.toISOString().replace(/\.\d{3}Z$/, 'Z')
       const params = new URLSearchParams({
         keywordSearch: 'PHP',
@@ -150,12 +160,14 @@ function App() {
     void loadThreatFeed()
     // Fetch once on initial load; manual refresh is available in the Threat Radar.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [dateFilter])
 
   const filteredThreats = useMemo(() => threats.filter(item => {
-    const matchesSearch = `${item.id} ${item.description}`.toLowerCase().includes(threatSearch.toLowerCase())
-    return matchesSearch && (severityFilter === 'ALL' || item.severity === severityFilter)
-  }), [threats, threatSearch, severityFilter])
+    const productText = item.affectedProducts.map(product => `${product.vendor} ${product.product}`).join(' ')
+    const matchesSearch = `${item.id} ${item.description} ${productText}`.toLowerCase().includes(threatSearch.toLowerCase())
+    const matchesProduct = !productFilter || productText.toLowerCase().includes(productFilter.toLowerCase())
+    return matchesSearch && matchesProduct && (severityFilter === 'ALL' || item.severity === severityFilter)
+  }), [threats, threatSearch, severityFilter, productFilter])
   const severityCounts = useMemo(() => (['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'] as ThreatSeverity[]).map(severity => ({
     severity,
     count: threats.filter(item => item.severity === severity).length,
@@ -259,11 +271,16 @@ function App() {
 
         {tab === 'radar' && <>
           <section className="panel live-feed-panel">
-            <div className="panel-header live-feed-header"><div><div className="eyebrow left"><span className="live-dot"/> LIVE DATA / NVD</div><h3>PHP vulnerability signal</h3><p>Published CVE records matching “PHP” in the last 119 days, loaded from the National Vulnerability Database.</p></div><button className="btn-secondary refresh-btn" onClick={() => void loadThreatFeed(true)} disabled={refreshing}><RefreshCw size={15} className={refreshing ? 'spin' : ''}/>{refreshing ? 'Refreshing' : 'Refresh feed'}</button></div>
+            <div className="panel-header live-feed-header"><div><div className="eyebrow left"><span className="live-dot"/> LIVE DATA / NVD</div><h3>PHP vulnerability signal</h3><p>Published CVE records matching “PHP” in the selected time window, loaded from the National Vulnerability Database.</p></div><button className="btn-secondary refresh-btn" onClick={() => void loadThreatFeed(true)} disabled={refreshing}><RefreshCw size={15} className={refreshing ? 'spin' : ''}/>{refreshing ? 'Refreshing' : 'Refresh feed'}</button></div>
             <div className="feed-meta"><span className={`feed-status ${feedState}`}><span className="live-dot"/>{feedState === 'loading' ? 'Connecting to NVD' : feedState === 'error' ? 'Feed unavailable' : 'NVD connected'}</span><span><Clock3 size={13}/>{lastUpdated ? `Updated ${new Date(lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Waiting for first sync'}</span><span>Source: NVD CVE API 2.0</span></div>
             {feedError && <div className={`feed-message ${feedState === 'error' ? 'error' : ''}`}><AlertTriangle size={15}/><span>{feedError} {feedState === 'error' && 'The rest of PHP WATCH remains available; the feed is not simulated.'}</span></div>}
+            <section className="intel-overview">
+              <div className="intel-overview-head"><div><span className="cve-section-label">THREAT INTELLIGENCE</span><h3>Vulnerability overview</h3><p>Derived from the CVE records currently loaded from NVD.</p></div><label className="date-filter">Window <select value={dateFilter} onChange={event => setDateFilter(event.target.value)}><option value="30">30 days</option><option value="60">60 days</option><option value="119">119 days</option></select></label></div>
+              <div className="intel-stats"><div><span>Records loaded</span><strong>{threats.length}</strong></div><div><span>Critical + High</span><strong>{threats.filter(item => item.severity === 'CRITICAL' || item.severity === 'HIGH').length}</strong></div><div><span>With product data</span><strong>{threats.filter(item => item.affectedProducts.length > 0).length}</strong></div><div><span>Published this month</span><strong>{threats.filter(item => item.published && new Date(item.published) >= new Date(new Date().getFullYear(), new Date().getMonth(), 1)).length}</strong></div></div>
+              <div className="trend-bars"><div className="trend-title">Severity distribution <span>Current result set</span></div>{severityCounts.map(item => <div className="trend-row" key={item.severity}><span>{item.severity}</span><div className="trend-track"><i className={`trend-${item.severity.toLowerCase()}`} style={{width:`${threats.length ? item.count / Math.max(1, threats.length) * 100 : 0}%`}}/></div><b>{item.count}</b></div>)}</div>
+            </section>
             <div className="severity-overview">{severityCounts.map(item => <button key={item.severity} className={`severity-card severity-${item.severity.toLowerCase()} ${severityFilter === item.severity ? 'selected' : ''}`} onClick={() => setSeverityFilter(severityFilter === item.severity ? 'ALL' : item.severity)}><span>{item.severity}</span><strong>{feedState === 'loading' && !threats.length ? '—' : item.count}</strong><div className="severity-track"><i style={{ width: `${(item.count / highestCount) * 100}%` }}/></div></button>)}</div>
-            <div className="feed-tools"><label className="feed-search"><Search size={15}/><input value={threatSearch} onChange={e => setThreatSearch(e.target.value)} placeholder="Search CVE IDs or descriptions"/></label><label className="severity-select"><span>Severity</span><select value={severityFilter} onChange={e => setSeverityFilter(e.target.value)}><option value="ALL">All levels</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option><option value="UNKNOWN">Unscored</option></select></label></div>
+            <div className="feed-tools"><label className="feed-search"><Search size={15}/><input value={threatSearch} onChange={e => setThreatSearch(e.target.value)} placeholder="Search CVE IDs or descriptions"/></label><label className="severity-select"><span>Product</span><input className="product-filter-input" value={productFilter} onChange={e => setProductFilter(e.target.value)} placeholder="Vendor / product"/></label><label className="severity-select"><span>Severity</span><select value={severityFilter} onChange={e => setSeverityFilter(e.target.value)}><option value="ALL">All levels</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option><option value="UNKNOWN">Unscored</option></select></label></div>
             {feedState === 'loading' && !threats.length ? <div className="feed-empty"><RefreshCw size={18} className="spin"/><strong>Loading published records</strong><p>Fetching recent CVE entries from NVD. First load may take a moment.</p></div> : filteredThreats.length ? <div className="threat-list">{filteredThreats.map(item => <article className="threat-item" key={item.id}><div className="threat-severity-mark"/><div className="threat-main"><div className="threat-item-top"><button className="cve-title-button" onClick={() => setSelectedThreat(item)}>{item.id} <ChevronRight size={13}/></button><span className={`severity-pill ${item.severity.toLowerCase()}`}>{item.severity}{item.score !== null ? ` · ${item.score.toFixed(1)}` : ''}</span></div><p>{item.description}</p><div className="threat-foot"><span>Published {item.published ? new Date(item.published).toLocaleDateString() : 'date unavailable'}</span><span>Modified {item.modified ? new Date(item.modified).toLocaleDateString() : '—'}</span><button className="threat-detail-link" onClick={() => setSelectedThreat(item)}>View details <ChevronRight size={12}/></button></div></div></article>)}</div> : <div className="feed-empty"><Search size={18}/><strong>No matching records</strong><p>Try another search or severity filter.</p></div>}
             <div className="panel-note"><CircleHelp size={15}/><span>Live means fetched from NVD when this page loads or when refreshed; this is not a real-time attack monitor. “PHP” is a keyword search and may include records mentioning PHP outside the PHP runtime itself. Verify affected products and versions in the original CVE record.</span></div>
           </section>
@@ -293,6 +310,7 @@ function App() {
             <div className="cve-modal-meta"><span className={`severity-pill ${selectedThreat.severity.toLowerCase()}`}>{selectedThreat.severity}{selectedThreat.score !== null ? ` · CVSS ${selectedThreat.score.toFixed(1)}` : ' · No CVSS score'}</span><span>Published {selectedThreat.published ? new Date(selectedThreat.published).toLocaleDateString() : 'date unavailable'}</span><span>Modified {selectedThreat.modified ? new Date(selectedThreat.modified).toLocaleDateString() : '—'}</span></div>
             <div className="cve-detail-section"><span className="cve-section-label">DESCRIPTION</span><p className="cve-description">{selectedThreat.description}</p></div>
             <div className="cve-detail-grid"><div className="cve-detail-section"><span className="cve-section-label">WEAKNESS / CWE</span>{selectedThreat.weaknesses.length ? <div className="cve-chip-list">{selectedThreat.weaknesses.map((weakness, index) => <span className="cve-chip" key={`${weakness}-${index}`}>{weakness}</span>)}</div> : <p className="cve-muted">No weakness classification included in this feed response.</p>}</div><div className="cve-detail-section"><span className="cve-section-label">SOURCE REFERENCES</span><p className="cve-muted">{selectedThreat.references.length} reference link{selectedThreat.references.length === 1 ? '' : 's'} supplied by NVD.</p></div></div>
+            <div className="cve-detail-section"><span className="cve-section-label">AFFECTED PRODUCTS / VERSION MATCHES</span>{selectedThreat.affectedProducts.length ? <div className="affected-products">{selectedThreat.affectedProducts.slice(0, 20).map((product, index) => <article className="affected-product" key={`${product.vendor}-${product.product}-${index}`}><div><strong>{product.vendor} / {product.product}</strong><span className="affected-status">NVD CPE match marked vulnerable</span></div><div className="affected-versions">{product.versions?.map((version, versionIndex) => <span key={`${version.version}-${versionIndex}`}>{version.version || 'Version not specified'}{version.lessThan ? ` · ${version.lessThan}` : ''}</span>)}</div></article>)}</div> : <p className="cve-muted">NVD did not provide vulnerable CPE product matches in this response. Check the source advisory for affected versions and fixes.</p>}<p className="cve-muted affected-note">CPE matches are taken from NVD configurations; they may not provide complete fixed-version guidance.</p></div>
             <div className="cve-detail-section"><span className="cve-section-label">REFERENCES</span>{selectedThreat.references.length ? <div className="cve-reference-list">{selectedThreat.references.slice(0, 12).map((reference, index) => <a key={`${reference.url}-${index}`} href={reference.url} target="_blank" rel="noreferrer"><span>{reference.url.replace(/^https?:\/\//, '').slice(0, 100)}</span><ExternalLink size={13}/></a>)}</div> : <p className="cve-muted">No additional references included. Open the official record for the complete entry.</p>}</div>
             <div className="cve-modal-foot"><p>PHP WATCH displays published NVD data. Confirm affected products, version ranges, and remediation in the original advisory before taking action.</p><a className="btn-primary" href={selectedThreat.sourceUrl} target="_blank" rel="noreferrer">Open official NVD record <ArrowUpRight size={14}/></a></div>
           </section>
