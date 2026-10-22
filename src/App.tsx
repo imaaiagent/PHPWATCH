@@ -24,6 +24,8 @@ type ThreatItem = {
   references: ThreatReference[]
   affectedProducts: AffectedProduct[]
 }
+type OsvVulnerability = { id: string; summary?: string; details?: string; published?: string; modified?: string; aliases?: string[]; references?: { type?: string; url: string }[]; affected?: { package?: { ecosystem?: string; name?: string }; ranges?: { events?: { introduced?: string; fixed?: string }[] }[]; versions?: string[] }[] }
+
 type NvdCve = {
   id?: string
   descriptions?: { lang: string; value: string }[]
@@ -120,6 +122,23 @@ function App() {
   const [productFilter, setProductFilter] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [selectedThreat, setSelectedThreat] = useState<ThreatItem | null>(null)
+  const [osvPackage, setOsvPackage] = useState('laravel/framework')
+  const [osvItems, setOsvItems] = useState<OsvVulnerability[]>([])
+  const [osvState, setOsvState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [osvError, setOsvError] = useState('')
+  const [expandedOsv, setExpandedOsv] = useState<string | null>(null)
+  async function searchOsvPackage(name = osvPackage) {
+    const packageName = name.trim()
+    if (!packageName) return
+    setOsvPackage(packageName); setOsvState('loading'); setOsvError('')
+    try {
+      const response = await fetch('https://api.osv.dev/v1/query', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ package: { ecosystem: 'Packagist', name: packageName } }) })
+      if (!response.ok) throw new Error(`OSV returned HTTP ${response.status}.`)
+      const payload = await response.json() as { vulns?: OsvVulnerability[] }
+      setOsvItems(payload.vulns || []); setOsvState('ready')
+    } catch (error) { setOsvState('error'); setOsvError(error instanceof Error ? error.message : 'Could not reach the public OSV API.') }
+  }
+
   async function loadThreatFeed(manual = false) {
     if (manual) setRefreshing(true)
     setFeedState(current => threats.length ? current : 'loading')
@@ -283,7 +302,18 @@ function App() {
             <div className="feed-tools"><label className="feed-search"><Search size={15}/><input value={threatSearch} onChange={e => setThreatSearch(e.target.value)} placeholder="Search CVE IDs or descriptions"/></label><label className="severity-select"><span>Product</span><input className="product-filter-input" value={productFilter} onChange={e => setProductFilter(e.target.value)} placeholder="Vendor / product"/></label><label className="severity-select"><span>Severity</span><select value={severityFilter} onChange={e => setSeverityFilter(e.target.value)}><option value="ALL">All levels</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option><option value="UNKNOWN">Unscored</option></select></label></div>
             {feedState === 'loading' && !threats.length ? <div className="feed-empty"><RefreshCw size={18} className="spin"/><strong>Loading published records</strong><p>Fetching recent CVE entries for WATCHPHP. First load may take a moment.</p></div> : filteredThreats.length ? <div className="threat-list">{filteredThreats.map(item => <article className="threat-item" key={item.id}><div className="threat-severity-mark"/><div className="threat-main"><div className="threat-item-top"><button className="cve-title-button" onClick={() => setSelectedThreat(item)}>{item.id} <ChevronRight size={13}/></button><span className={`severity-pill ${item.severity.toLowerCase()}`}>{item.severity}{item.score !== null ? ` · ${item.score.toFixed(1)}` : ''}</span></div><p>{item.description}</p><div className="threat-foot"><span>Published {item.published ? new Date(item.published).toLocaleDateString() : 'date unavailable'}</span><span>Modified {item.modified ? new Date(item.modified).toLocaleDateString() : '—'}</span><button className="threat-detail-link" onClick={() => setSelectedThreat(item)}>View details <ChevronRight size={12}/></button></div></div></article>)}</div> : <div className="feed-empty"><Search size={18}/><strong>No matching records</strong><p>Try another search or severity filter.</p></div>}
             <div className="panel-note"><CircleHelp size={15}/><span>Live means WATCHPHP fetches published CVE records when this page loads or when refreshed; this is not a real-time attack monitor. “PHP” is a keyword search and may include records mentioning PHP outside the PHP runtime itself. Verify affected products and versions in the original CVE record.</span></div>
-            <div className="osv-explorer-strip"><div><span className="eyebrow left"><span className="live-dot"/> OSV DATABASE</span><strong>Explore package-level advisories</strong><p>OSV covers open-source packages and ecosystems beyond CVE keyword matches. Search the live OSV catalogue for PHP-related records.</p></div><a className="btn-secondary" href="https://osv.dev/list?q=PHP" target="_blank" rel="noreferrer">Open OSV explorer <ArrowUpRight size={14}/></a></div>
+            <div className="osv-live-panel">
+              <div className="osv-live-head"><div><span className="eyebrow left"><span className="live-dot"/> WATCHPHP / LIVE OSV</span><h3>Package-level advisories</h3><p>Query the public OSV API for a Composer (Packagist) package. Results are fetched live and remain separate from NVD data.</p></div><a className="btn-secondary" href="https://osv.dev/" target="_blank" rel="noreferrer">OSV source <ArrowUpRight size={14}/></a></div>
+              <form className="osv-search-row" onSubmit={event => { event.preventDefault(); void searchOsvPackage() }}><label htmlFor="osv-package">Packagist package</label><input id="osv-package" value={osvPackage} onChange={event => setOsvPackage(event.target.value)} placeholder="e.g. laravel/framework"/><button className="btn-primary" type="submit" disabled={osvState === 'loading'}>{osvState === 'loading' ? <RefreshCw size={14} className="spin"/> : <Search size={14}/>} Search OSV</button></form>
+              <div className="osv-quick-packages"><span>Try:</span>{['laravel/framework','symfony/http-kernel','guzzlehttp/guzzle','monolog/monolog'].map(name => <button type="button" key={name} onClick={() => void searchOsvPackage(name)}>{name}</button>)}</div>
+              {osvState === 'idle' && <div className="osv-empty"><Activity size={19}/><strong>Search live package advisories</strong><span>Enter a Composer package name or choose a quick search above.</span></div>}
+              {osvState === 'loading' && <div className="osv-empty"><RefreshCw size={18} className="spin"/><strong>Querying OSV database…</strong><span>Waiting for the public OSV API response.</span></div>}
+              {osvState === 'error' && <div className="osv-message error">{osvError} Check your connection or retry. Browser access to public APIs can occasionally be blocked.</div>}
+              {osvState === 'ready' && <div className="osv-results-head"><strong>{osvItems.length} advisory record{osvItems.length === 1 ? '' : 's'}</strong><span>Packagist · {osvPackage}</span></div>}
+              {osvState === 'ready' && !osvItems.length && <div className="osv-empty"><ShieldCheck size={19}/><strong>No advisories returned</strong><span>This does not prove the package is vulnerability-free. Confirm the package name and check upstream advisories.</span></div>}
+              {osvItems.map(item => <article className="osv-record" key={item.id}><button className="osv-record-toggle" type="button" onClick={() => setExpandedOsv(expandedOsv === item.id ? null : item.id)}><span><strong>{item.id}</strong><small>{item.summary || 'No summary supplied by OSV.'}</small><em>{item.affected?.map(a => a.package?.name).filter(Boolean).join(', ') || osvPackage} · Published {item.published ? new Date(item.published).toLocaleDateString() : 'date unavailable'}</em></span><ChevronRight size={16} className={expandedOsv === item.id ? 'rotated' : ''}/></button>
+              {expandedOsv === item.id && <div className="osv-record-detail"><p>{item.details || item.summary || 'No additional details supplied by OSV.'}</p>{item.aliases?.length ? <div className="osv-aliases"><span>Aliases</span>{item.aliases.map(alias => <code key={alias}>{alias}</code>)}</div> : null}{item.affected?.map((affected,index) => <div className="osv-affected" key={`${affected.package?.name}-${index}`}><strong>{affected.package?.ecosystem || 'Package'} / {affected.package?.name || osvPackage}</strong>{affected.ranges?.flatMap(range => range.events || []).map((ev,i) => <span key={i}>{ev.introduced ? `Introduced: ${ev.introduced}` : ''}{ev.fixed ? ` · Fixed: ${ev.fixed}` : ''}</span>)}</div>)}<div className="osv-ref-links">{(item.references || []).slice(0,8).map((ref,index) => <a href={ref.url} target="_blank" rel="noreferrer" key={`${ref.url}-${index}`}>{ref.type || 'Reference'} <ExternalLink size={12}/></a>)}<a href={`https://osv.dev/vulnerability/${encodeURIComponent(item.id)}`} target="_blank" rel="noreferrer">Official OSV record <ArrowUpRight size={12}/></a></div></div>}</article>)}
+            </div>
           </section>
           <div className="radar-layout">
           <section className="panel sources-panel">
