@@ -66,3 +66,8 @@ Paste the output into Safe Scanner. Do not paste cookies, authorization headers,
 - Adds an overview based on the currently loaded NVD result set: severity distribution, loaded record count, critical/high count, product-configuration coverage, and this-month publication count.
 - Adds a 30/60/119-day date window, which reloads records from NVD, plus vendor/product text matching in the threat search and product filter.
 - Shows vulnerable CPE matches supplied by NVD in each in-app CVE detail panel. NVD CPE matches are not a substitute for checking vendor advisories and fixed versions.
+
+
+### Data sources and branding
+
+The Threat Radar UI is branded as WATCHPHP. CVE records in the live feed are fetched from the upstream NVD CVE API; the in-app details modal keeps an official record link for verification. The OSV explorer links to OSV's live PHP search catalogue for package-level advisories. The OSV link is an external explorer, not a claim that the app has ingested the entire OSV database.
