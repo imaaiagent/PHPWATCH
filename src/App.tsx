@@ -124,6 +124,33 @@ function analyzeHeaders(raw: string): Finding[] {
   })
 }
 
+
+type OsvVulnerability = {
+  id: string
+  summary?: string
+  details?: string
+  published?: string
+  modified?: string
+  aliases?: string[]
+  references?: { type?: string; url: string }[]
+  severity?: { type?: string; score?: string }[]
+  affected?: { package?: { ecosystem?: string; name?: string }; ranges?: { type?: string; events?: { introduced?: string; fixed?: string; last_affected?: string }[] }[] }[]
+}
+type OsvQueryResult = { vulns?: OsvVulnerability[] }
+
+function osvSeverity(item: OsvVulnerability): ThreatSeverity {
+  const vector = item.severity?.find(entry => entry.type?.toUpperCase().includes('CVSS'))?.score || ''
+  const match = vector.match(/(?:^|\\/)(\\d+(?:\\.\\d+)?)$/)
+  const score = match ? Number(match[1]) : NaN
+  if (!Number.isFinite(score)) return 'UNKNOWN'
+  return score >= 9 ? 'CRITICAL' : score >= 7 ? 'HIGH' : score >= 4 ? 'MEDIUM' : score > 0 ? 'LOW' : 'UNKNOWN'
+}
+
+const DEFAULT_OSV_PACKAGES = [
+  'laravel/framework', 'symfony/symfony', 'guzzlehttp/guzzle', 'phpunit/phpunit',
+  'twig/twig', 'monolog/monolog', 'doctrine/orm', 'drupal/core'
+]
+
 function App() {
   const [tab, setTab] = useState<Tab>('radar')
   const [headers, setHeaders] = useState('')
@@ -140,6 +167,46 @@ function App() {
   const [productFilter, setProductFilter] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [selectedThreat, setSelectedThreat] = useState<ThreatItem | null>(null)
+  const [osvPackage, setOsvPackage] = useState('')
+  const [osvItems, setOsvItems] = useState<OsvVulnerability[]>([])
+  const [osvState, setOsvState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [osvError, setOsvError] = useState('')
+  const [osvUpdated, setOsvUpdated] = useState('')
+  const [osvRefreshing, setOsvRefreshing] = useState(false)
+  const [osvQueryLabel, setOsvQueryLabel] = useState('Popular Packagist packages')
+
+  async function loadOsvFeed(packageName?: string) {
+    setOsvRefreshing(true)
+    setOsvState(osvItems.length ? 'ready' : 'loading')
+    setOsvError('')
+    const packages = (packageName?.trim() ? [packageName.trim()] : DEFAULT_OSV_PACKAGES)
+      .filter((name, index, all) => all.indexOf(name) === index)
+    setOsvQueryLabel(packageName?.trim() || 'Popular Packagist packages')
+    try {
+      const response = await fetch('https://api.osv.dev/v1/querybatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          queries: packages.map(name => ({ package: { ecosystem: 'Packagist', name } }))
+        })
+      })
+      if (!response.ok) throw new Error(`OSV returned HTTP ${response.status}.`)
+      const payload = await response.json() as { results?: OsvQueryResult[] }
+      const items = (payload.results || []).flatMap(result => result.vulns || [])
+        .filter((item, index, all) => Boolean(item.id) && all.findIndex(other => other.id === item.id) === index)
+        .sort((a, b) => Date.parse(b.published || b.modified || '') - Date.parse(a.published || a.modified || ''))
+      setOsvItems(items)
+      setOsvState('ready')
+      setOsvUpdated(new Date().toISOString())
+      if (!items.length) setOsvError(`No advisories returned for ${packageName?.trim() || 'the selected package set'}. Try a specific Composer package name.`)
+    } catch (error) {
+      setOsvState('error')
+      setOsvError(error instanceof Error ? error.message : 'Could not load OSV data. Check your connection and try again.')
+    } finally {
+      setOsvRefreshing(false)
+    }
+  }
+
   async function loadThreatFeed(manual = false) {
     if (manual) setRefreshing(true)
     setFeedState(current => threats.length ? current : 'loading')
@@ -181,6 +248,12 @@ function App() {
     // Fetch once on initial load; manual refresh is available in the Threat Radar.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFilter])
+
+  useEffect(() => {
+    void loadOsvFeed()
+    // Load published OSV advisories for a small set of common Packagist packages.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const filteredThreats = useMemo(() => threats.filter(item => {
     const productText = item.affectedProducts.map(product => `${product.vendor} ${product.product}`).join(' ')
@@ -303,7 +376,35 @@ function App() {
             <div className="feed-tools"><label className="feed-search"><Search size={15}/><input value={threatSearch} onChange={e => setThreatSearch(e.target.value)} placeholder="Search CVE IDs or descriptions"/></label><label className="severity-select"><span>Product</span><input className="product-filter-input" value={productFilter} onChange={e => setProductFilter(e.target.value)} placeholder="Vendor / product"/></label><label className="severity-select"><span>Severity</span><select value={severityFilter} onChange={e => setSeverityFilter(e.target.value)}><option value="ALL">All levels</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option><option value="UNKNOWN">Unscored</option></select></label></div>
             {feedState === 'loading' && !threats.length ? <div className="feed-empty"><RefreshCw size={18} className="spin"/><strong>Loading published records</strong><p>Fetching recent CVE entries for WATCHPHP. First load may take a moment.</p></div> : filteredThreats.length ? <div className="threat-list">{filteredThreats.map(item => <article className="threat-item" key={item.id}><div className="threat-severity-mark"/><div className="threat-main"><div className="threat-item-top"><button className="cve-title-button" onClick={() => setSelectedThreat(item)}>{item.id} <ChevronRight size={13}/></button><span className={`severity-pill ${item.severity.toLowerCase()}`}>{item.severity}{item.score !== null ? ` · ${item.score.toFixed(1)}` : ''}</span></div><p>{item.description}</p><div className="threat-foot"><span>Published {item.published ? new Date(item.published).toLocaleDateString() : 'date unavailable'}</span><span>Modified {item.modified ? new Date(item.modified).toLocaleDateString() : '—'}</span><button className="threat-detail-link" onClick={() => setSelectedThreat(item)}>View details <ChevronRight size={12}/></button></div></div></article>)}</div> : <div className="feed-empty"><Search size={18}/><strong>No matching records</strong><p>Try another search or severity filter.</p></div>}
             <div className="panel-note"><CircleHelp size={15}/><span>Live means WATCHPHP fetches published CVE records when this page loads or when refreshed; this is not a real-time attack monitor. “PHP” is a keyword search and may include records mentioning PHP outside the PHP runtime itself. Verify affected products and versions in the original CVE record.</span></div>
-            <div className="osv-explorer-strip"><div><span className="eyebrow left"><span className="live-dot"/> OSV DATABASE</span><strong>Explore package-level advisories</strong><p>OSV covers open-source packages and ecosystems beyond CVE keyword matches. Search the live OSV catalogue for PHP-related records.</p></div><a className="btn-secondary" href="https://osv.dev/list?q=PHP" target="_blank" rel="noreferrer">Open OSV explorer <ArrowUpRight size={14}/></a></div>
+            <section className="osv-live-panel">
+              <div className="osv-live-header">
+                <div><div className="eyebrow left"><span className="live-dot"/> OSV DATABASE / LIVE ADVISORIES</div><h3>Package-level vulnerability feed</h3><p>Live advisories queried from OSV for Composer (Packagist) packages. Results are package-specific, not a complete search of every PHP advisory.</p></div>
+                <button className="btn-secondary refresh-btn" onClick={() => void loadOsvFeed(osvPackage)} disabled={osvRefreshing}><RefreshCw size={15} className={osvRefreshing ? 'spin' : ''}/>{osvRefreshing ? 'Refreshing' : 'Refresh OSV'}</button>
+              </div>
+              <div className="osv-feed-meta"><span className={`feed-status ${osvState}`}><span className="live-dot"/>{osvState === 'loading' ? 'Connecting to OSV' : osvState === 'error' ? 'OSV unavailable' : 'OSV API connected'}</span><span><Clock3 size={13}/>{osvUpdated ? `Updated ${new Date(osvUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Waiting for first sync'}</span><span>Query: {osvQueryLabel}</span></div>
+              <form className="osv-search-row" onSubmit={event => { event.preventDefault(); void loadOsvFeed(osvPackage) }}>
+                <label className="feed-search"><Search size={15}/><input value={osvPackage} onChange={event => setOsvPackage(event.target.value)} placeholder="Search Composer package e.g. laravel/framework"/></label>
+                <button className="btn-primary" type="submit" disabled={osvRefreshing || !osvPackage.trim()}>Search package <ChevronRight size={14}/></button>
+                <button className="btn-quiet" type="button" onClick={() => { setOsvPackage(''); void loadOsvFeed() }} disabled={osvRefreshing}>Popular packages</button>
+              </form>
+              {osvError && <div className={`feed-message ${osvState === 'error' ? 'error' : ''}`}><AlertTriangle size={15}/><span>{osvError}</span></div>}
+              {osvState === 'loading' && !osvItems.length ? <div className="feed-empty"><RefreshCw size={18} className="spin"/><strong>Loading package advisories</strong><p>Querying OSV for published advisories. This may take a moment.</p></div> : osvItems.length ? <div className="osv-results">
+                <div className="osv-results-summary"><strong>{osvItems.length} advisories</strong><span>Returned by OSV for {osvQueryLabel}</span></div>
+                {osvItems.map(item => {
+                  const scoreRaw = item.severity?.find(entry => entry.type?.toUpperCase().includes('CVSS'))?.score || ''
+                  const scoreMatch = scoreRaw.match(/(?:^|\/)(\d+(?:\.\d+)?)$/)
+                  const score = scoreMatch ? Number(scoreMatch[1]) : null
+                  const severity = osvSeverity(item)
+                  const affectedNames = Array.from(new Set((item.affected || []).map(affected => affected.package?.name).filter(Boolean)))
+                  const summary = item.summary || item.details?.replace(/\s+/g, ' ').slice(0, 320) || 'No summary supplied by OSV.'
+                  return <article className="osv-item" key={item.id}>
+                    <div className="osv-item-main"><div className="threat-item-top"><a className="cve-title-button" href={`https://osv.dev/vulnerability/${encodeURIComponent(item.id)}`} target="_blank" rel="noreferrer">{item.id} <ArrowUpRight size={13}/></a><span className={`severity-pill ${severity.toLowerCase()}`}>{severity}{score !== null ? ` · ${score.toFixed(1)}` : ''}</span></div>
+                    <p>{summary}</p><div className="threat-foot"><span>Published {item.published ? new Date(item.published).toLocaleDateString() : 'date unavailable'}</span><span>Packages: {affectedNames.slice(0, 3).join(', ') || 'see advisory'}</span><a href={`https://osv.dev/vulnerability/${encodeURIComponent(item.id)}`} target="_blank" rel="noreferrer">View advisory <ArrowUpRight size={12}/></a></div></div>
+                  </article>
+                })}
+              </div> : <div className="feed-empty"><Search size={18}/><strong>No package advisories loaded</strong><p>Search for a specific Composer package name to query OSV directly.</p></div>}
+              <div className="panel-note"><CircleHelp size={15}/><span>Data is fetched from the OSV API when this page loads, when refreshed, or after a package search. Coverage depends on the package names queried. Verify affected versions and remediation in the original advisory.</span></div>
+            </section>
           </section>
           <div className="radar-layout">
           <section className="panel sources-panel">
