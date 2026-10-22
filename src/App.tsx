@@ -10,6 +10,7 @@ type Tab = 'radar' | 'scanner' | 'report'
 type Finding = { name: string; status: 'Present' | 'Not detected' | 'Review'; detail: string; severity: 'good' | 'warn' | 'info' }
 
 type ThreatSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN'
+type ThreatReference = { url: string; source?: string; tags?: string[] }
 type ThreatItem = {
   id: string
   description: string
@@ -18,14 +19,17 @@ type ThreatItem = {
   severity: ThreatSeverity
   score: number | null
   sourceUrl: string
+  weaknesses: string[]
+  references: ThreatReference[]
 }
 type NvdCve = {
   id?: string
   descriptions?: { lang: string; value: string }[]
   published?: string
   lastModified?: string
-  metrics?: Record<string, { cvssData?: { baseScore?: number; baseSeverity?: string } }[]> 
-  references?: { url: string }[]
+  metrics?: Record<string, { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } }[]>
+  weaknesses?: { description?: { lang: string; value: string }[] }[]
+  references?: ThreatReference[]
 }
 
 function getCveSeverity(cve: NvdCve): { severity: ThreatSeverity; score: number | null } {
@@ -56,6 +60,8 @@ function mapNvdItem(item: NvdCve): ThreatItem {
     severity,
     score,
     sourceUrl: `https://nvd.nist.gov/vuln/detail/${encodeURIComponent(cve.id || '')}`,
+    weaknesses: (cve.weaknesses || []).flatMap(group => (group.description || []).filter(d => d.lang === 'en').map(d => d.value)).filter((value, index, all) => all.indexOf(value) === index),
+    references: cve.references || [],
   }
 }
 
@@ -103,6 +109,7 @@ function App() {
   const [threatSearch, setThreatSearch] = useState('')
   const [severityFilter, setSeverityFilter] = useState('ALL')
   const [refreshing, setRefreshing] = useState(false)
+  const [selectedThreat, setSelectedThreat] = useState<ThreatItem | null>(null)
   async function loadThreatFeed(manual = false) {
     if (manual) setRefreshing(true)
     setFeedState(current => threats.length ? current : 'loading')
@@ -257,7 +264,7 @@ function App() {
             {feedError && <div className={`feed-message ${feedState === 'error' ? 'error' : ''}`}><AlertTriangle size={15}/><span>{feedError} {feedState === 'error' && 'The rest of PHP WATCH remains available; the feed is not simulated.'}</span></div>}
             <div className="severity-overview">{severityCounts.map(item => <button key={item.severity} className={`severity-card severity-${item.severity.toLowerCase()} ${severityFilter === item.severity ? 'selected' : ''}`} onClick={() => setSeverityFilter(severityFilter === item.severity ? 'ALL' : item.severity)}><span>{item.severity}</span><strong>{feedState === 'loading' && !threats.length ? '—' : item.count}</strong><div className="severity-track"><i style={{ width: `${(item.count / highestCount) * 100}%` }}/></div></button>)}</div>
             <div className="feed-tools"><label className="feed-search"><Search size={15}/><input value={threatSearch} onChange={e => setThreatSearch(e.target.value)} placeholder="Search CVE IDs or descriptions"/></label><label className="severity-select"><span>Severity</span><select value={severityFilter} onChange={e => setSeverityFilter(e.target.value)}><option value="ALL">All levels</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option><option value="UNKNOWN">Unscored</option></select></label></div>
-            {feedState === 'loading' && !threats.length ? <div className="feed-empty"><RefreshCw size={18} className="spin"/><strong>Loading published records</strong><p>Fetching recent CVE entries from NVD. First load may take a moment.</p></div> : filteredThreats.length ? <div className="threat-list">{filteredThreats.map(item => <article className="threat-item" key={item.id}><div className="threat-severity-mark"/><div className="threat-main"><div className="threat-item-top"><a href={item.sourceUrl} target="_blank" rel="noreferrer">{item.id} <ArrowUpRight size={13}/></a><span className={`severity-pill ${item.severity.toLowerCase()}`}>{item.severity}{item.score !== null ? ` · ${item.score.toFixed(1)}` : ''}</span></div><p>{item.description}</p><div className="threat-foot"><span>Published {item.published ? new Date(item.published).toLocaleDateString() : 'date unavailable'}</span><span>Modified {item.modified ? new Date(item.modified).toLocaleDateString() : '—'}</span><a href={item.sourceUrl} target="_blank" rel="noreferrer">View NVD record <ExternalLink size={12}/></a></div></div></article>)}</div> : <div className="feed-empty"><Search size={18}/><strong>No matching records</strong><p>Try another search or severity filter.</p></div>}
+            {feedState === 'loading' && !threats.length ? <div className="feed-empty"><RefreshCw size={18} className="spin"/><strong>Loading published records</strong><p>Fetching recent CVE entries from NVD. First load may take a moment.</p></div> : filteredThreats.length ? <div className="threat-list">{filteredThreats.map(item => <article className="threat-item" key={item.id}><div className="threat-severity-mark"/><div className="threat-main"><div className="threat-item-top"><button className="cve-title-button" onClick={() => setSelectedThreat(item)}>{item.id} <ChevronRight size={13}/></button><span className={`severity-pill ${item.severity.toLowerCase()}`}>{item.severity}{item.score !== null ? ` · ${item.score.toFixed(1)}` : ''}</span></div><p>{item.description}</p><div className="threat-foot"><span>Published {item.published ? new Date(item.published).toLocaleDateString() : 'date unavailable'}</span><span>Modified {item.modified ? new Date(item.modified).toLocaleDateString() : '—'}</span><button className="threat-detail-link" onClick={() => setSelectedThreat(item)}>View details <ChevronRight size={12}/></button></div></div></article>)}</div> : <div className="feed-empty"><Search size={18}/><strong>No matching records</strong><p>Try another search or severity filter.</p></div>}
             <div className="panel-note"><CircleHelp size={15}/><span>Live means fetched from NVD when this page loads or when refreshed; this is not a real-time attack monitor. “PHP” is a keyword search and may include records mentioning PHP outside the PHP runtime itself. Verify affected products and versions in the original CVE record.</span></div>
           </section>
           <div className="radar-layout">
@@ -279,6 +286,17 @@ function App() {
           </section>
           </div>
         </>}
+
+        {selectedThreat && <div className="cve-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setSelectedThreat(null) }}>
+          <section className="cve-modal" role="dialog" aria-modal="true" aria-labelledby="cve-modal-title">
+            <div className="cve-modal-head"><div><span className="eyebrow left"><span className="live-dot"/> VULNERABILITY RECORD / NVD DATA</span><h2 id="cve-modal-title">{selectedThreat.id}</h2></div><button className="modal-close" onClick={() => setSelectedThreat(null)} aria-label="Close vulnerability details">×</button></div>
+            <div className="cve-modal-meta"><span className={`severity-pill ${selectedThreat.severity.toLowerCase()}`}>{selectedThreat.severity}{selectedThreat.score !== null ? ` · CVSS ${selectedThreat.score.toFixed(1)}` : ' · No CVSS score'}</span><span>Published {selectedThreat.published ? new Date(selectedThreat.published).toLocaleDateString() : 'date unavailable'}</span><span>Modified {selectedThreat.modified ? new Date(selectedThreat.modified).toLocaleDateString() : '—'}</span></div>
+            <div className="cve-detail-section"><span className="cve-section-label">DESCRIPTION</span><p className="cve-description">{selectedThreat.description}</p></div>
+            <div className="cve-detail-grid"><div className="cve-detail-section"><span className="cve-section-label">WEAKNESS / CWE</span>{selectedThreat.weaknesses.length ? <div className="cve-chip-list">{selectedThreat.weaknesses.map((weakness, index) => <span className="cve-chip" key={`${weakness}-${index}`}>{weakness}</span>)}</div> : <p className="cve-muted">No weakness classification included in this feed response.</p>}</div><div className="cve-detail-section"><span className="cve-section-label">SOURCE REFERENCES</span><p className="cve-muted">{selectedThreat.references.length} reference link{selectedThreat.references.length === 1 ? '' : 's'} supplied by NVD.</p></div></div>
+            <div className="cve-detail-section"><span className="cve-section-label">REFERENCES</span>{selectedThreat.references.length ? <div className="cve-reference-list">{selectedThreat.references.slice(0, 12).map((reference, index) => <a key={`${reference.url}-${index}`} href={reference.url} target="_blank" rel="noreferrer"><span>{reference.url.replace(/^https?:\/\//, '').slice(0, 100)}</span><ExternalLink size={13}/></a>)}</div> : <p className="cve-muted">No additional references included. Open the official record for the complete entry.</p>}</div>
+            <div className="cve-modal-foot"><p>PHP WATCH displays published NVD data. Confirm affected products, version ranges, and remediation in the original advisory before taking action.</p><a className="btn-primary" href={selectedThreat.sourceUrl} target="_blank" rel="noreferrer">Open official NVD record <ArrowUpRight size={14}/></a></div>
+          </section>
+        </div>}
 
         {tab === 'scanner' && <section className="panel scanner-panel">
           <div className="panel-header"><div><h3>HTTP security header review</h3><p>Paste response headers from a system you own or are authorized to assess.</p></div><span className="icon-box"><ScanSearch size={18}/></span></div>

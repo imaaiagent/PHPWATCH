@@ -3,7 +3,7 @@
 A small, open-source PHP security intelligence dashboard MVP.
 
 ## Features
-- **Threat Radar:** fetches recent CVE records matching the keyword `PHP` from the official NVD CVE API 2.0, with severity counts, search, filters, publication dates, and direct source links. The feed loads on page open and can be manually refreshed.
+- **Threat Radar:** fetches recent CVE records matching the keyword `PHP` from the official NVD CVE API 2.0, with severity counts, search, filters, publication dates, and an in-app CVE detail panel with NVD-provided descriptions, weakness classifications, and reference links. The official NVD record remains available for verification. The feed loads on page open and can be manually refreshed.
 - **Safe Scanner:** locally analyzes HTTP response headers pasted by the user. It makes no network requests and does not exploit or probe any host.
 - **Shareable Report:** builds a redacted text report that can be copied or shared.
 
