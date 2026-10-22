@@ -32,7 +32,7 @@ type NvdCve = {
   metrics?: Record<string, { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } }[]>
   weaknesses?: { description?: { lang: string; value: string }[] }[]
   references?: ThreatReference[]
-  configurations?: { nodes?: { cpeMatch?: { vulnerable?: boolean; criteria?: string; versionStartIncluding?: string; versionStartExcluding?: string; versionEndIncluding?: string; versionEndExcluding?: string }[]; children?: unknown[] }[]
+  configurations?: { nodes?: { cpeMatch?: { vulnerable?: boolean; criteria?: string; versionStartIncluding?: string; versionStartExcluding?: string; versionEndIncluding?: string; versionEndExcluding?: string }[]; children?: unknown[] }[] }[]
 }
 
 function getCveSeverity(cve: NvdCve): { severity: ThreatSeverity; score: number | null } {
