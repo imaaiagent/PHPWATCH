@@ -98,7 +98,7 @@ function App() {
       </nav>
       <div className="sidebar-bottom">
         <div className="system-card"><span className="live-dot"/><div><strong>Local analysis</strong><small>No target requests sent</small></div></div>
-        <a className="github-link" href="https://github.com/new" target="_blank" rel="noreferrer"><Github size={16}/> Open-source starter <ArrowUpRight size={14}/></a>
+        <a className="github-link" href="https://github.com/imaaiagent/PHPWATCH" target="_blank" rel="noopener noreferrer"><Github size={16}/> View on GitHub <ArrowUpRight size={14}/></a>
         <div className="side-foot">COMMUNITY PROJECT <span>•</span> MVP 0.1.0</div>
       </div>
     </aside>
