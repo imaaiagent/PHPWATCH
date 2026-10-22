@@ -1,12 +1,63 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Activity, ArrowUpRight, BadgeCheck, BookOpen, Check, ChevronRight, CircleHelp,
   Copy, ExternalLink, FileSearch, Github, Globe2, LockKeyhole, Radar, ScanSearch,
-  Shield, ShieldAlert, ShieldCheck, Terminal, Zap
+  Shield, ShieldAlert, ShieldCheck, Terminal, Zap, RefreshCw, Search, Clock3,
+  AlertTriangle
 } from 'lucide-react'
 
 type Tab = 'radar' | 'scanner' | 'report'
 type Finding = { name: string; status: 'Present' | 'Not detected' | 'Review'; detail: string; severity: 'good' | 'warn' | 'info' }
+
+type ThreatSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN'
+type ThreatItem = {
+  id: string
+  description: string
+  published: string
+  modified: string
+  severity: ThreatSeverity
+  score: number | null
+  sourceUrl: string
+}
+type NvdCve = {
+  id?: string
+  descriptions?: { lang: string; value: string }[]
+  published?: string
+  lastModified?: string
+  metrics?: Record<string, { cvssData?: { baseScore?: number; baseSeverity?: string } }[]> 
+  references?: { url: string }[]
+}
+
+function getCveSeverity(cve: NvdCve): { severity: ThreatSeverity; score: number | null } {
+  const metrics = cve.metrics || {}
+  const candidates = [metrics.cvssMetricV40, metrics.cvssMetricV31, metrics.cvssMetricV30, metrics.cvssMetricV2]
+  for (const group of candidates) {
+    const metric = group?.[0]
+    if (!metric?.cvssData) continue
+    const score = typeof metric.cvssData.baseScore === 'number' ? metric.cvssData.baseScore : null
+    const raw = (metric.cvssData.baseSeverity || '').toUpperCase()
+    const severity: ThreatSeverity = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].includes(raw)
+      ? raw as ThreatSeverity
+      : score === null ? 'UNKNOWN' : score >= 9 ? 'CRITICAL' : score >= 7 ? 'HIGH' : score >= 4 ? 'MEDIUM' : score > 0 ? 'LOW' : 'UNKNOWN'
+    return { severity, score }
+  }
+  return { severity: 'UNKNOWN', score: null }
+}
+
+function mapNvdItem(item: NvdCve): ThreatItem {
+  const cve = item
+  const description = cve.descriptions?.find(d => d.lang === 'en')?.value || 'No English summary was supplied by NVD.'
+  const { severity, score } = getCveSeverity(cve)
+  return {
+    id: cve.id || 'Unknown CVE',
+    description,
+    published: cve.published || '',
+    modified: cve.lastModified || '',
+    severity,
+    score,
+    sourceUrl: `https://nvd.nist.gov/vuln/detail/${encodeURIComponent(cve.id || '')}`,
+  }
+}
 
 const SOURCES = [
   { name: 'PHP Security Advisories', kind: 'Primary source', detail: 'Official PHP security announcements and release information.', url: 'https://www.php.net/releases/', icon: ShieldCheck },
@@ -45,6 +96,63 @@ function App() {
   const [targetLabel, setTargetLabel] = useState('')
   const [ran, setRan] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [threats, setThreats] = useState<ThreatItem[]>([])
+  const [feedState, setFeedState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [feedError, setFeedError] = useState('')
+  const [lastUpdated, setLastUpdated] = useState('')
+  const [threatSearch, setThreatSearch] = useState('')
+  const [severityFilter, setSeverityFilter] = useState('ALL')
+  const [refreshing, setRefreshing] = useState(false)
+  async function loadThreatFeed(manual = false) {
+    if (manual) setRefreshing(true)
+    setFeedState(current => threats.length ? current : 'loading')
+    setFeedError('')
+    try {
+      const end = new Date()
+      const start = new Date(end.getTime() - 120 * 24 * 60 * 60 * 1000)
+      const iso = (date: Date) => date.toISOString().replace(/\.\d{3}Z$/, 'Z')
+      const params = new URLSearchParams({
+        keywordSearch: 'PHP',
+        resultsPerPage: '40',
+        sortBy: 'publishDate',
+        pubStartDate: iso(start),
+        pubEndDate: iso(end),
+      })
+      const response = await fetch(`https://services.nvd.nist.gov/rest/json/cves/2.0?${params.toString()}`, {
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) throw new Error(response.status === 429 ? 'NVD rate limit reached. Wait a little before refreshing.' : `NVD returned HTTP ${response.status}.`)
+      const payload = await response.json() as { vulnerabilities?: { cve?: NvdCve }[] }
+      const items = (payload.vulnerabilities || []).map(row => mapNvdItem(row.cve || {})).filter(item => item.id !== 'Unknown CVE')
+      items.sort((a, b) => Date.parse(b.published) - Date.parse(a.published))
+      setThreats(items)
+      setFeedState('ready')
+      setLastUpdated(new Date().toISOString())
+      if (!items.length) setFeedError('NVD returned no matching PHP keyword records in this 120-day window.')
+    } catch (error) {
+      setFeedState('error')
+      setFeedError(error instanceof Error ? error.message : 'Could not load NVD data. Check the connection and try again.')
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadThreatFeed()
+    // Fetch once on initial load; manual refresh is available in the Threat Radar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const filteredThreats = useMemo(() => threats.filter(item => {
+    const matchesSearch = `${item.id} ${item.description}`.toLowerCase().includes(threatSearch.toLowerCase())
+    return matchesSearch && (severityFilter === 'ALL' || item.severity === severityFilter)
+  }), [threats, threatSearch, severityFilter])
+  const severityCounts = useMemo(() => (['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'] as ThreatSeverity[]).map(severity => ({
+    severity,
+    count: threats.filter(item => item.severity === severity).length,
+  })), [threats])
+  const highestCount = Math.max(1, ...severityCounts.map(item => item.count))
+
   const findings = useMemo(() => analyzeHeaders(headers), [headers])
   const present = findings.filter(f => f.status === 'Present').length
   const score = Math.round((present / findings.length) * 100)
@@ -140,7 +248,17 @@ function App() {
           <span className="pill"><span className="live-dot"/> MVP / ACTIVE</span>
         </div>
 
-        {tab === 'radar' && <div className="radar-layout">
+        {tab === 'radar' && <>
+          <section className="panel live-feed-panel">
+            <div className="panel-header live-feed-header"><div><div className="eyebrow left"><span className="live-dot"/> LIVE DATA / NVD</div><h3>PHP vulnerability signal</h3><p>Published CVE records matching “PHP” in the last 120 days, loaded from the National Vulnerability Database.</p></div><button className="btn-secondary refresh-btn" onClick={() => void loadThreatFeed(true)} disabled={refreshing}><RefreshCw size={15} className={refreshing ? 'spin' : ''}/>{refreshing ? 'Refreshing' : 'Refresh feed'}</button></div>
+            <div className="feed-meta"><span className={`feed-status ${feedState}`}><span className="live-dot"/>{feedState === 'loading' ? 'Connecting to NVD' : feedState === 'error' ? 'Feed unavailable' : 'NVD connected'}</span><span><Clock3 size={13}/>{lastUpdated ? `Updated ${new Date(lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Waiting for first sync'}</span><span>Source: NVD CVE API 2.0</span></div>
+            {feedError && <div className={`feed-message ${feedState === 'error' ? 'error' : ''}`}><AlertTriangle size={15}/><span>{feedError} {feedState === 'error' && 'The rest of PHP WATCH remains available; the feed is not simulated.'}</span></div>}
+            <div className="severity-overview">{severityCounts.map(item => <button key={item.severity} className={`severity-card severity-${item.severity.toLowerCase()} ${severityFilter === item.severity ? 'selected' : ''}`} onClick={() => setSeverityFilter(severityFilter === item.severity ? 'ALL' : item.severity)}><span>{item.severity}</span><strong>{feedState === 'loading' && !threats.length ? '—' : item.count}</strong><div className="severity-track"><i style={{ width: `${(item.count / highestCount) * 100}%` }}/></div></button>)}</div>
+            <div className="feed-tools"><label className="feed-search"><Search size={15}/><input value={threatSearch} onChange={e => setThreatSearch(e.target.value)} placeholder="Search CVE IDs or descriptions"/></label><label className="severity-select"><span>Severity</span><select value={severityFilter} onChange={e => setSeverityFilter(e.target.value)}><option value="ALL">All levels</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option><option value="UNKNOWN">Unscored</option></select></label></div>
+            {feedState === 'loading' && !threats.length ? <div className="feed-empty"><RefreshCw size={18} className="spin"/><strong>Loading published records</strong><p>Fetching recent CVE entries from NVD. First load may take a moment.</p></div> : filteredThreats.length ? <div className="threat-list">{filteredThreats.map(item => <article className="threat-item" key={item.id}><div className="threat-severity-mark"/><div className="threat-main"><div className="threat-item-top"><a href={item.sourceUrl} target="_blank" rel="noreferrer">{item.id} <ArrowUpRight size={13}/></a><span className={`severity-pill ${item.severity.toLowerCase()}`}>{item.severity}{item.score !== null ? ` · ${item.score.toFixed(1)}` : ''}</span></div><p>{item.description}</p><div className="threat-foot"><span>Published {item.published ? new Date(item.published).toLocaleDateString() : 'date unavailable'}</span><span>Modified {item.modified ? new Date(item.modified).toLocaleDateString() : '—'}</span><a href={item.sourceUrl} target="_blank" rel="noreferrer">View NVD record <ExternalLink size={12}/></a></div></div></article>)}</div> : <div className="feed-empty"><Search size={18}/><strong>No matching records</strong><p>Try another search or severity filter.</p></div>}
+            <div className="panel-note"><CircleHelp size={15}/><span>Live means fetched from NVD when this page loads or when refreshed; this is not a real-time attack monitor. “PHP” is a keyword search and may include records mentioning PHP outside the PHP runtime itself. Verify affected products and versions in the original CVE record.</span></div>
+          </section>
+          <div className="radar-layout">
           <section className="panel sources-panel">
             <div className="panel-header"><div><h3>Trusted source directory</h3><p>Start with the source, not the speculation.</p></div><span className="icon-box"><Radar size={18}/></span></div>
             <div className="source-list">{SOURCES.map((source, i) => <a className="source-row" key={source.name} href={source.url} target="_blank" rel="noreferrer">
@@ -157,7 +275,8 @@ function App() {
             <div className="check-row"><Check size={15}/><span>Check patch and release notes</span></div>
             <a className="text-link" href="https://www.php.net/releases/" target="_blank" rel="noreferrer">Review official PHP releases <ArrowUpRight size={14}/></a>
           </section>
-        </div>}
+          </div>
+        </>}
 
         {tab === 'scanner' && <section className="panel scanner-panel">
           <div className="panel-header"><div><h3>HTTP security header review</h3><p>Paste response headers from a system you own or are authorized to assess.</p></div><span className="icon-box"><ScanSearch size={18}/></span></div>
