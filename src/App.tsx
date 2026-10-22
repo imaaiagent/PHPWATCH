@@ -109,12 +109,12 @@ function App() {
     setFeedError('')
     try {
       const end = new Date()
-      const start = new Date(end.getTime() - 120 * 24 * 60 * 60 * 1000)
+      const start = new Date(end.getTime() - 119 * 24 * 60 * 60 * 1000)
       const iso = (date: Date) => date.toISOString().replace(/\.\d{3}Z$/, 'Z')
       const params = new URLSearchParams({
         keywordSearch: 'PHP',
         resultsPerPage: '40',
-        sortBy: 'publishDate',
+        sortBy: 'published',
         pubStartDate: iso(start),
         pubEndDate: iso(end),
       })
@@ -128,7 +128,7 @@ function App() {
       setThreats(items)
       setFeedState('ready')
       setLastUpdated(new Date().toISOString())
-      if (!items.length) setFeedError('NVD returned no matching PHP keyword records in this 120-day window.')
+      if (!items.length) setFeedError('NVD returned no matching PHP keyword records in this 119-day window.')
     } catch (error) {
       setFeedState('error')
       setFeedError(error instanceof Error ? error.message : 'Could not load NVD data. Check the connection and try again.')
@@ -250,7 +250,7 @@ function App() {
 
         {tab === 'radar' && <>
           <section className="panel live-feed-panel">
-            <div className="panel-header live-feed-header"><div><div className="eyebrow left"><span className="live-dot"/> LIVE DATA / NVD</div><h3>PHP vulnerability signal</h3><p>Published CVE records matching “PHP” in the last 120 days, loaded from the National Vulnerability Database.</p></div><button className="btn-secondary refresh-btn" onClick={() => void loadThreatFeed(true)} disabled={refreshing}><RefreshCw size={15} className={refreshing ? 'spin' : ''}/>{refreshing ? 'Refreshing' : 'Refresh feed'}</button></div>
+            <div className="panel-header live-feed-header"><div><div className="eyebrow left"><span className="live-dot"/> LIVE DATA / NVD</div><h3>PHP vulnerability signal</h3><p>Published CVE records matching “PHP” in the last 119 days, loaded from the National Vulnerability Database.</p></div><button className="btn-secondary refresh-btn" onClick={() => void loadThreatFeed(true)} disabled={refreshing}><RefreshCw size={15} className={refreshing ? 'spin' : ''}/>{refreshing ? 'Refreshing' : 'Refresh feed'}</button></div>
             <div className="feed-meta"><span className={`feed-status ${feedState}`}><span className="live-dot"/>{feedState === 'loading' ? 'Connecting to NVD' : feedState === 'error' ? 'Feed unavailable' : 'NVD connected'}</span><span><Clock3 size={13}/>{lastUpdated ? `Updated ${new Date(lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Waiting for first sync'}</span><span>Source: NVD CVE API 2.0</span></div>
             {feedError && <div className={`feed-message ${feedState === 'error' ? 'error' : ''}`}><AlertTriangle size={15}/><span>{feedError} {feedState === 'error' && 'The rest of PHP WATCH remains available; the feed is not simulated.'}</span></div>}
             <div className="severity-overview">{severityCounts.map(item => <button key={item.severity} className={`severity-card severity-${item.severity.toLowerCase()} ${severityFilter === item.severity ? 'selected' : ''}`} onClick={() => setSeverityFilter(severityFilter === item.severity ? 'ALL' : item.severity)}><span>{item.severity}</span><strong>{feedState === 'loading' && !threats.length ? '—' : item.count}</strong><div className="severity-track"><i style={{ width: `${(item.count / highestCount) * 100}%` }}/></div></button>)}</div>
