@@ -114,14 +114,16 @@ function App() {
       const params = new URLSearchParams({
         keywordSearch: 'PHP',
         resultsPerPage: '40',
-        sortBy: 'published',
         pubStartDate: iso(start),
         pubEndDate: iso(end),
       })
-      const response = await fetch(`https://services.nvd.nist.gov/rest/json/cves/2.0?${params.toString()}`, {
+      const response = await fetch(`https://services.nvd.nist.gov/rest/json/cves/2.0/?${params.toString()}`, {
         headers: { Accept: 'application/json' },
       })
-      if (!response.ok) throw new Error(response.status === 429 ? 'NVD rate limit reached. Wait a little before refreshing.' : `NVD returned HTTP ${response.status}.`)
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 180).replace(/\s+/g, ' ')
+        throw new Error(response.status === 429 ? 'NVD rate limit reached. Wait a little before refreshing.' : `NVD returned HTTP ${response.status}${detail ? `: ${detail}` : '.'}`)
+      }
       const payload = await response.json() as { vulnerabilities?: { cve?: NvdCve }[] }
       const items = (payload.vulnerabilities || []).map(row => mapNvdItem(row.cve || {})).filter(item => item.id !== 'Unknown CVE')
       items.sort((a, b) => Date.parse(b.published) - Date.parse(a.published))
